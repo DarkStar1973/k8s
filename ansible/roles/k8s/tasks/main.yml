@@ -1,0 +1,223 @@
+---
+
+- name: "Install required packages"
+  apt:
+    name: apt-transport-https, ca-certificates, curl, software-properties-common
+    state: present
+
+- name: Add kubernetes apt GPG key
+  apt_key:
+    url: https://packages.cloud.google.com/apt/doc/apt-key.gpg
+
+- name: Add docker apt GPG key
+  apt_key:
+    url: https://download.docker.com/linux/ubuntu/gpg
+
+- name: Add kubernetes repository
+  apt_repository:
+    repo: deb http://apt.kubernetes.io/ kubernetes-xenial main
+    update_cache: yes
+
+- name: Add docker-ce repository
+  apt_repository:
+    repo: deb [arch=amd64] https://download.docker.com/linux/ubuntu {{ ansible_distribution_release }} stable
+    update_cache: yes
+
+- name: Register swap status
+  command: "swapon -s"
+  register: swap_status
+  changed_when: False
+
+- name: Turning off swap
+  command: "swapoff -a"
+  when: swap_status.stdout is defined and swap_status.stdout != ""
+
+- name: Ensure swap is disable
+  replace:
+    path: /etc/fstab
+    regexp: '^([^#].*?\sswap\s+sw\s+.*)$'
+    replace: '# \1'
+
+- name: Install docker-ce
+  apt:
+    name: docker-ce=18.06.3~ce~3-0~ubuntu
+    state: present
+
+- name: Configure docker
+  copy:
+    src: etc/docker/daemon.json
+    dest: /etc/docker/daemon.json
+    owner: root
+    group: root
+    mode: 644
+  notify: restart docker
+
+- meta: flush_handlers
+
+- name: Ensure docker service is enabled and started
+  service:
+    name: docker
+    state: started
+    enabled: yes
+
+- name: Install kubernetes packages
+  apt:
+    name: kubelet, kubeadm, kubernetes-cni
+    state: present
+
+- name: Configure Kubelet
+  template:
+    src: etc/default/kubelet.j2
+    dest: /etc/default/kubelet
+    owner: root
+    group: root
+    mode: 0644
+  notify: restart kubelet
+
+- meta: flush_handlers
+
+- name: Ensure kubelet service is enabled and started
+  service:
+    name: kubelet
+    state: started
+    enabled: yes
+
+- name: Bridge and forward chain networking
+  sysctl:
+    name:  net.bridge.bridge-nf-call-iptables
+    value: '1'
+    sysctl_set: yes
+    state: present
+    reload: yes
+
+- name: Check if kubeadm already init
+  stat:
+    path: "/var/lib/kubelet/config.yaml"
+  register: kubeadm_init
+  when: is_master
+
+
+- name: "Init master node"
+  command: kubeadm init --pod-network-cidr=10.244.0.0/16 --apiserver-advertise-address="{{ ansible_host }}"
+  when: is_master and kubeadm_init.stat is defined and not kubeadm_init.stat.exists
+
+- name: "Fetch configuration file"
+  fetch:
+    src: /etc/kubernetes/admin.conf
+    dest: /tmp/kube/
+    flat: yes
+  when: is_master
+
+- name: "Create configuration folder"
+  file:
+    path: /root/.kube
+    state: directory
+    mode: 0750
+    owner: root
+    group: root
+
+- name: "Copy conf for root user"
+  copy:
+    src: /tmp/kube/admin.conf
+    dest: /root/.kube/config
+
+- name: Check flannel status
+  stat:
+    path: /run/flannel/subnet.env
+  register: flannel_conf
+  changed_when: false
+    
+- name: Install flannel RBAC provider
+  command: "kubectl apply -f https://raw.githubusercontent.com/coreos/flannel/master/Documentation/k8s-manifests/kube-flannel-rbac.yml"
+  when: is_master and (not flannel_conf.stat.exists)
+
+- name: Install flannel networking provider
+  command: "kubectl apply -f https://raw.githubusercontent.com/coreos/flannel/master/Documentation/kube-flannel.yml"
+  when: is_master and (not flannel_conf.stat.exists)
+
+- name: Generate join command
+  command: "kubeadm token create --print-join-command"
+  register: token_join
+  when: is_master
+  changed_when: false
+
+- name: Save join command
+  add_host:
+    name: "K8S_JOIN"
+    join: "{{ token_join.stdout }}"
+  changed_when: false
+
+- name: check if node has a cluster configured
+  stat:
+    path: "/etc/kubernetes/kubelet.conf"
+  register: node_conf
+
+- name: Register nodes
+  command: "{{ hostvars['K8S_JOIN']['join'] }}"
+  when: not is_master and (not node_conf.stat.exists)
+  register: node_setup
+
+- name: Get Kubernetes cluster node status
+  command: kubectl get nodes
+  register: nodes_status
+  changed_when: false
+  when: is_master 
+
+- name: Outpout Kubernetes cluster node status
+  debug:
+   var: nodes_status.stdout_lines 
+  changed_when: false
+  when: is_master and (nodes_status.stdout is defined)
+
+- name: command test
+  command: kubectl get nodes
+  register: cmd1
+  when: is_master
+
+- name: debug
+  debug:
+    msg: " {{ cmd1.stdout_lines | select('search','NotReady') | list | count}} "
+  when: is_master
+
+- name: Wait for nodes to be ready
+  command: kubectl get nodes
+  register: cmd_res
+  delay: 30
+  retries: 20
+  until: cmd_res.stdout_lines | select('search','NotReady') | list | count == 0
+  when: is_master
+
+- name: Istio directory
+  file:
+    path: /opt/istio
+    state: directory
+    mode: 0755
+    owner: root
+    group: root
+  when: is_master
+
+- name: Get pods istio status
+  command: kubectl get pods -n istio-system
+  register: istio_pods_status
+  when: is_master
+  changed_when: false
+
+- name: Get istio
+  unarchive:
+    src: https://github.com/istio/istio/releases/download/1.4.2/istio-1.4.2-linux.tar.gz
+    dest: /opt/istio/
+    remote_src: yes
+  when: is_master and ( "No resources found" in istio_pods_status.stderr)
+
+
+  #- name: install istio
+  #  command: /opt/istio/istio-1.4.2/bin/istioctl manifest apply --set profile=demo
+  #  when: is_master and ( "No resources found" in istio_pods_status.stderr)
+
+- name: copy deployement file on master
+  copy:
+    src: opt/k8s/
+    dest: /opt/k8s/
+    owner: root
+    group: root
+  when: is_master

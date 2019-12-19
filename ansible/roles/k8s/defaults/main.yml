@@ -1,0 +1,4 @@
+---
+# defaults file for common
+#
+is_master: "{{ inventory_hostname in groups['kube-master'] }}"
