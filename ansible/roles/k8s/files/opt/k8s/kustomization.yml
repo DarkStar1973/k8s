@@ -1,8 +1,0 @@
-secretGenerator:
-- name: mysql-pass
-  literals:
-  - password=Hi88Lpld!
-resources:
-  - volumes.yml
-  - mysql-deployment.yml
-  - wp-deployment.yml
