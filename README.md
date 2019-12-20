@@ -1,14 +1,14 @@
 # k8s test
 
 ## Description
-This will deploy a k8s custer on 3 local vbox nodes in ubuntu/bionic64
+This will deploy a k8s cluster on 3 local vbox nodes in ubuntu/bionic64
 
 
 ## How use it:
 
 ### setup.sh
 
-setup.sh script will create local 3 virtualboxes, that will be kubernetes nodes (1 master et 2 minions).
+setup.sh script will create local 3 virtualboxes for 3 kubernetes nodes (1 master et 2 minions).
 If you don't want to use local VMs but other hosts go to the ansible part of this doc.
 You must adapt setup.sh for you environement. Vms must be in your local private network and you must tell virtualbox which local interfaces to bridge.
 
