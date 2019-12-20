@@ -84,11 +84,15 @@
 
 - name: Bridge and forward chain networking
   sysctl:
-    name:  net.bridge.bridge-nf-call-iptables
+    name:  "{{item }}"
     value: '1'
     sysctl_set: yes
     state: present
     reload: yes
+  with_items:
+    - net.bridge.bridge-nf-call-ip6tables
+    - net.bridge.bridge-nf-call-iptables
+    - net.bridge.bridge-nf-call-arptables
 
 - name: Check if kubeadm already init
   stat:
@@ -127,12 +131,20 @@
   register: flannel_conf
   changed_when: false
     
-- name: Install flannel RBAC provider
-  command: "kubectl apply -f https://raw.githubusercontent.com/coreos/flannel/master/Documentation/k8s-manifests/kube-flannel-rbac.yml"
-  when: is_master and (not flannel_conf.stat.exists)
+  #- name: Install flannel RBAC provider
+  #command: "kubectl apply -f https://raw.githubusercontent.com/coreos/flannel/master/Documentation/k8s-manifests/kube-flannel-rbac.yml"
+  #when: is_master and (not flannel_conf.stat.exists)
+
+- name: copy deployement file on master
+  copy:
+    src: opt/k8s/
+    dest: /opt/k8s/
+    owner: root
+    group: root
+  when: is_master
 
 - name: Install flannel networking provider
-  command: "kubectl apply -f https://raw.githubusercontent.com/coreos/flannel/master/Documentation/kube-flannel.yml"
+  command: "kubectl apply -f /opt/k8s/kube-flannel.yml"
   when: is_master and (not flannel_conf.stat.exists)
 
 - name: Generate join command
@@ -210,14 +222,7 @@
   when: is_master and ( "No resources found" in istio_pods_status.stderr)
 
 
-  #- name: install istio
-  #  command: /opt/istio/istio-1.4.2/bin/istioctl manifest apply --set profile=demo
-  #  when: is_master and ( "No resources found" in istio_pods_status.stderr)
+- name: install istio
+  command: /opt/istio/istio-1.4.2/bin/istioctl manifest apply --set profile=demo
+  when: is_master and ( "No resources found" in istio_pods_status.stderr)
 
-- name: copy deployement file on master
-  copy:
-    src: opt/k8s/
-    dest: /opt/k8s/
-    owner: root
-    group: root
-  when: is_master
